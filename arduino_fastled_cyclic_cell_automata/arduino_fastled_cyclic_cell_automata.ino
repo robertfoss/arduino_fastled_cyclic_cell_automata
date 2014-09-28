@@ -3,7 +3,8 @@
 #include "FastLED.h"
 
 #define __always_inline __attribute__((always_inline))
-
+#define likely(x)       __builtin_expect(x, 1)
+#define unlikely(x)     __builtin_expect(x, 0)
 
 #define PIXEL_WIDTH     (20)
 #define PIXEL_HEIGHT    (16)
@@ -25,14 +26,28 @@ typedef struct pattern {
 } t_pattern;
 
 const struct pattern patterns[] = {
-    {2, 5, 3,  'N'},
-    {2, 3, 3,  'N'},
-    {1, 1, 12, 'N'},
-    {1, 3, 3,  'M'},
-    {1, 2, 5,  'M'}
+//    {3, 10, 2, 'N'},  // Amoeba (Jason Rampe)
+//    {5, 23, 2, 'N'},  // Black vs White (Jason Rampe)
+//    {2, 5,  2, 'N'},  // Black vs White 2 (Jason Rampe)
+    {2, 5,  3, 'N'},  // Cubism (Jason Rampe)
+    {2, 3,  5, 'N'},  // Maps (Mirek Wojtowicz)
+    {3, 4,  5, 'N'},  // Stripes (Mirek Wojtowicz)
+    {2, 2,  6, 'N'},  // Boiling (Jason Rampe)
+    {4, 4,  7, 'N'},  // Fuzz (Jason Rampe)
+    {1, 1, 12, 'N'},  // TOBENAMED
+    {1, 1, 14, 'N'},  // CCA (David Griffeath)
+    {1, 1, 15, 'N'},  // Diamond Spirals (Jason Rampe)
+
+    {1, 3,  3, 'M'},  // 313 (David Griffeath)
+//    {2, 11, 3, 'M'},  // Bootstrap (David Griffeath)
+//s    {3, 15, 3, 'M'},  // Lava Lamp (Jason Rampe)
+    {2, 10, 3, 'M'},  // Lava Lamp 2 (Jason Rampe)
+//    {2, 9,  4, 'M'},  // Fossil Debris (David Griffeath)
+    {1, 3,  4, 'M'},  // Perfect Spirals (David Griffeath)
+    {3, 5,  8, 'M'},  // Cyclic Spirals (David Griffeath)
+//    {2, 5,  8, 'M'}   // Turbulent Phase (David Griffeath)
 };
 const unsigned int nbr_patterns = sizeof(patterns)/sizeof(patterns[0]);
-
 
 const struct pattern *g_pattern;
 unsigned long g_timestamp;
@@ -46,13 +61,14 @@ uint8_t (*matrix_tmp)[BOARD_WIDTH];
 CRGB leds[PIXEL_HEIGHT][PIXEL_WIDTH];
 t_color *g_colorspace = NULL;
 bool g_changed = false;
-
+uint8_t idx = 0;
 
 void rand_pattern(void)
 {
-    Serial.print("rand_pattern\n");
-    uint8_t idx = random(nbr_patterns);
-    g_pattern = &(patterns[idx]);
+//    uint8_t idx = random(nbr_patterns);
+    Serial.print("rand_pattern: ");
+    Serial.println(idx);
+    g_pattern = &(patterns[idx++]);
 }
 
 
@@ -123,6 +139,8 @@ void setup()
 void loop()
 {
 Serial.print("loop()\n");
+Serial.print("pattern: ");
+Serial.println(idx-1);
     unsigned long perf_timer = millis();
     write_pixels();
 Serial.print("write_pixels\n");
@@ -149,20 +167,20 @@ Serial.print("stalls handled\n");
     // Old Pattern reset
     if ((millis() - g_timestamp) > TIMEOUT_PATTERN)
     {
+Serial.print("old patterns reset\n");
         rand_matrix(g_pattern, matrix_nxt);
         g_timestamp = millis();
         initialize_board();
         // print "Pattern is getting boring.. randomizing board"
     }
-Serial.print("old patterns reset\n");
 
-Serial.print("time since timestamp: ");
-Serial.println(millis() - g_timestamp);
-Serial.print("time in loop: ");
-Serial.println(millis() - perf_timer);
     matrix_tmp = matrix;
     matrix = matrix_nxt;
     matrix_nxt = matrix_tmp;
+Serial.print("time in loop: ");
+Serial.println(millis() - perf_timer);
+Serial.print("time since timestamp: ");
+Serial.println(millis() - g_timestamp);
 //    delay(25);
 }
 
@@ -171,8 +189,8 @@ __always_inline void write_pixels(void)
 {
     for (int y = 0; y < PIXEL_HEIGHT; ++y)  {
         for (int x = 0; x < PIXEL_WIDTH; ++x) {
-            leds[y][x] = CHSV(c.r, 255, 255);
             t_color c = g_colorspace[matrix[y][x]];
+            leds[y][x] = CHSV(c.r, 255, 255);
         }
     }
     LEDS.show();
@@ -217,16 +235,16 @@ __always_inline void process_next_gen(const struct pattern *p)
 __always_inline void process_moore(const struct pattern *p, unsigned int x, unsigned int y)
 {
     unsigned int n_neigh = 0;
-    unsigned int n_searched = 0;
+    unsigned int nxt_state = (matrix[y][x] + 1) % p->nbr_states;
+    
     for (int ii = -(p->range); ii < (p->range+1); ++ii) {
         unsigned int y_i = (x + ii) % BOARD_HEIGHT;
 
         for (int i = -(p->range); i < (p->range+1); ++i) {
             unsigned int x_i = (x + i) % BOARD_WIDTH;
 
-            if (x != x_i || y != y_i) {
-                n_searched += 1;
-                if (((matrix[y][x] + 1) % p->nbr_states) == matrix[y_i][x_i]) {
+            if (likely( x != x_i || y != y_i )) {
+                if (unlikely( nxt_state == matrix[y_i][x_i] )) {
                     n_neigh += 1;
                 }
             }
@@ -252,24 +270,22 @@ Serial.print("]\n");
 __always_inline void process_neumann(const struct pattern *p, unsigned int x, unsigned int y)
 {
     unsigned int n_neigh = 0;
-    unsigned int n_searched = 0;
     unsigned int nxt_state = (matrix[y][x] + 1) % p->nbr_states;
+    
     for (int r = 1; r < (p->range + 1); r++) {
         for (int i = 0; i < (r + 1); i++) {
-            n_searched += 2;
-            if  (nxt_state == matrix[(y - (r - i)) % BOARD_HEIGHT][(x + i) % BOARD_WIDTH]) {
+            if  (unlikely( nxt_state == matrix[(y - (r - i)) % BOARD_HEIGHT][(x + i) % BOARD_WIDTH] )) {
                 n_neigh += 1;
             }
-            if  (nxt_state == matrix[(y + (r - i)) % BOARD_HEIGHT][(x - i) % BOARD_WIDTH]) {
+            if  (unlikely( nxt_state == matrix[(y + (r - i)) % BOARD_HEIGHT][(x - i) % BOARD_WIDTH] )) {
                 n_neigh += 1;
             }
         }
         for (int i = 0; i < r; i++) {
-            n_searched += 2;
-            if  (nxt_state == matrix[(y - (r - i)) % BOARD_HEIGHT][(x - i) % BOARD_WIDTH]) {
+            if  (unlikely( nxt_state == matrix[(y - (r - i)) % BOARD_HEIGHT][(x - i) % BOARD_WIDTH] )) {
                 n_neigh += 1;
             }
-            if  (nxt_state == matrix[(y + (r - i)) % BOARD_HEIGHT][(x + i) % BOARD_WIDTH]) {
+            if  (unlikely( nxt_state == matrix[(y + (r - i)) % BOARD_HEIGHT][(x + i) % BOARD_WIDTH] )) {
                 n_neigh += 1;
             }
         }
