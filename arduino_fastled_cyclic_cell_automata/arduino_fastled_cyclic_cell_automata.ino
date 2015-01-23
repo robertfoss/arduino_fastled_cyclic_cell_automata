@@ -6,12 +6,13 @@
 #define likely(x)       __builtin_expect(x, 1)
 #define unlikely(x)     __builtin_expect(x, 0)
 
-#define PIXEL_WIDTH     (20)
-#define PIXEL_HEIGHT    (16)
-#define BOARD_WIDTH     (128)
-#define BOARD_HEIGHT    (128)
-#define TIMEOUT_STALL   (4*1000)
-#define TIMEOUT_PATTERN (40*1000)
+#define PIXEL_WIDTH         (20)
+#define PIXEL_HEIGHT        (16)
+#define BOARD_WIDTH         (128)
+#define BOARD_HEIGHT        (128)
+#define TIMEOUT_STALL       (3*1000)
+#define MAX_TIMEOUT_STALLS  (2)
+#define TIMEOUT_PATTERN     (40*1000)
 
 
 typedef struct color {
@@ -58,23 +59,20 @@ uint8_t (*matrix)[BOARD_WIDTH] = buffer_0;
 uint8_t (*matrix_nxt)[BOARD_WIDTH] = buffer_1;
 uint8_t (*matrix_tmp)[BOARD_WIDTH];
 
-CRGB leds[PIXEL_HEIGHT][PIXEL_WIDTH];
+CRGB    leds[PIXEL_HEIGHT][PIXEL_WIDTH];
 t_color *g_colorspace = NULL;
-bool g_changed = false;
-uint8_t idx = 0;
+bool    g_changed = false;
+uint8_t g_nbr_stalls;
 
 void rand_pattern(void)
 {
-//    uint8_t idx = random(nbr_patterns);
-    Serial.print("rand_pattern: ");
-    Serial.println(idx);
-    g_pattern = &(patterns[idx++]);
+    uint8_t idx = random(nbr_patterns);
+    g_pattern = &(patterns[idx]);
 }
 
 
 void rand_matrix(const struct pattern *p, uint8_t (*m)[BOARD_WIDTH])
 {
-    Serial.print("rand_matrix\n");
     for (int y = 0; y < BOARD_HEIGHT; ++y)  {
         for (int x = 0; x < BOARD_WIDTH; ++x) {
             m[y][x] = random(p->nbr_states);
@@ -85,7 +83,6 @@ void rand_matrix(const struct pattern *p, uint8_t (*m)[BOARD_WIDTH])
 
 void rand_colorspace(const struct pattern *p)
 {
-    Serial.print("rand_colorspace\n");
     if (g_colorspace != NULL) free(g_colorspace);
     g_colorspace = (t_color*) malloc(p->nbr_states*sizeof(t_color));
     if (g_colorspace == NULL) return;
@@ -104,12 +101,11 @@ void initialize_board(void)
     rand_matrix(g_pattern, matrix);
     rand_colorspace(g_pattern);
     g_timestamp = millis();
+    g_nbr_stalls = 0;
 }
 
 void setup()
 {
-    Serial.begin(9600);
-    Serial.print("Setup\n");
     randomSeed(analogRead(0) ^ analogRead(10) ^ analogRead(20) ^ analogRead(30));
     LEDS.addLeds<LPD8806, 0,  1 >(leds[0],  PIXEL_WIDTH);
     LEDS.addLeds<LPD8806, 2,  3 >(leds[1],  PIXEL_WIDTH);
@@ -119,10 +115,10 @@ void setup()
     LEDS.addLeds<LPD8806, 10, 11>(leds[5],  PIXEL_WIDTH);
     LEDS.addLeds<LPD8806, 12, 13>(leds[6],  PIXEL_WIDTH);
     LEDS.addLeds<LPD8806, 14, 15>(leds[7],  PIXEL_WIDTH);
-    LEDS.addLeds<LPD8806, 16, 17>(leds[8],  PIXEL_WIDTH);
-    LEDS.addLeds<LPD8806, 18, 19>(leds[9],  PIXEL_WIDTH);
-    LEDS.addLeds<LPD8806, 20, 21>(leds[10], PIXEL_WIDTH);
-    LEDS.addLeds<LPD8806, 22, 23>(leds[11], PIXEL_WIDTH);
+    LEDS.addLeds<LPD8806, 17, 16>(leds[8],  PIXEL_WIDTH);
+    LEDS.addLeds<LPD8806, 19, 18>(leds[9],  PIXEL_WIDTH);
+    LEDS.addLeds<LPD8806, 21, 20>(leds[10], PIXEL_WIDTH);
+    LEDS.addLeds<LPD8806, 23, 22>(leds[11], PIXEL_WIDTH);
     LEDS.addLeds<LPD8806, 24, 25>(leds[12], PIXEL_WIDTH);
     LEDS.addLeds<LPD8806, 26, 27>(leds[13], PIXEL_WIDTH);
     LEDS.addLeds<LPD8806, 28, 29>(leds[14], PIXEL_WIDTH);
@@ -136,14 +132,35 @@ void setup()
 }
 
 
+void process_stall()
+{
+    g_nbr_stalls++;
+    
+    if (g_nbr_stalls < MAX_TIMEOUT_STALLS)
+    {
+        rand_matrix(g_pattern, matrix_nxt);
+    }
+    else
+    {
+        initialize_board();    
+    }
+    
+    // TODO: Instead of randomizing matrix.
+    //       Try switching to another pattern with the same number of states
+    // print "Generation stalled.. randomizing board"
+}
+
+
+void process_timeout()
+{
+    initialize_board();
+}
+
+
 void loop()
 {
-Serial.print("loop()\n");
-Serial.print("pattern: ");
-Serial.println(idx-1);
     unsigned long perf_timer = millis();
     write_pixels();
-Serial.print("write_pixels\n");
     g_changed = false;
     process_next_gen(g_pattern);
     
@@ -151,37 +168,24 @@ Serial.print("write_pixels\n");
         g_timestamp_stalled = millis();
     }
 
-Serial.print("process_next_gen\n");
-
     // Handle stalls
-    if (!g_changed &&
-        (millis() - g_timestamp_stalled) > TIMEOUT_STALL)
+    bool do_stall = !g_changed && (millis() - g_timestamp_stalled) > TIMEOUT_STALL;
+    if (unlikely(do_stall))
     {
-        rand_matrix(g_pattern, matrix_nxt);
-        // TODO: Instead of randomizing matrix.
-        //       Try switching to another pattern with the same number of states
-        // print "Generation stalled.. randomizing board"
+        process_stall();
     }
-Serial.print("stalls handled\n");
 
-    // Old Pattern reset
-    if ((millis() - g_timestamp) > TIMEOUT_PATTERN)
+    // Old Pattern timeout
+    bool do_timeout = (millis() - g_timestamp) > TIMEOUT_PATTERN;
+    if (unlikely(do_timeout))
     {
-Serial.print("old patterns reset\n");
-        rand_matrix(g_pattern, matrix_nxt);
-        g_timestamp = millis();
-        initialize_board();
-        // print "Pattern is getting boring.. randomizing board"
+        process_timeout();
     }
+
 
     matrix_tmp = matrix;
     matrix = matrix_nxt;
     matrix_nxt = matrix_tmp;
-Serial.print("time in loop: ");
-Serial.println(millis() - perf_timer);
-Serial.print("time since timestamp: ");
-Serial.println(millis() - g_timestamp);
-//    delay(25);
 }
 
 
@@ -189,8 +193,32 @@ __always_inline void write_pixels(void)
 {
     for (int y = 0; y < PIXEL_HEIGHT; ++y)  {
         for (int x = 0; x < PIXEL_WIDTH; ++x) {
-            t_color c = g_colorspace[matrix[y][x]];
-            leds[y][x] = CHSV(c.r, 255, 255);
+            unsigned int color[3];
+            CRGB c;
+            
+            c = CHSV(g_colorspace[matrix[y*2][x*2]].r, 255, 255);
+            color[0] = c.r;
+            color[1] = c.g;
+            color[2] = c.b;
+            
+            c = CHSV(g_colorspace[matrix[y*2 + 1][x*2]].r, 255, 255);
+            color[0] += c.r;
+            color[1] += c.g;
+            color[2] += c.b;
+            
+            c = CHSV(g_colorspace[matrix[y*2][x*2 + 1]].r, 255, 255);
+            color[0] += c.r;
+            color[1] += c.g;
+            color[2] += c.b;
+            
+            c = CHSV(g_colorspace[matrix[y*2 + 1][x*2 + 1]].r, 255, 255);
+            color[0] += c.r;
+            color[1] += c.g;
+            color[2] += c.b;
+            
+            leds[y][x].r = color[0] / 4;
+            leds[y][x].g = color[1] / 4;
+            leds[y][x].b = color[2] / 4;
         }
     }
     LEDS.show();
@@ -210,7 +238,6 @@ void clear_pixels(void)
 
 __always_inline void process_next_gen(const struct pattern *p)
 {
-//    Serial.print("process_next_gen\n");
     switch (p->type) {
     case 'N': {
         for (unsigned int y = 0; y < BOARD_HEIGHT; ++y)  {
@@ -250,14 +277,7 @@ __always_inline void process_moore(const struct pattern *p, unsigned int x, unsi
             }
         }
     }
-//#    print "n_neigh=%d  searched=%d  range=%d  threshold=%d" % (n_neigh, n_searched, rang, thresh)
-/*
-Serial.print("matrix[");
-Serial.print(y);
-Serial.print("][");
-Serial.print(x);
-Serial.print("]\n");
-*/
+
     if (n_neigh >= p->threshold) {
         matrix_nxt[y][x] = (matrix[y][x] + 1) % p->nbr_states;
         g_changed = true;
